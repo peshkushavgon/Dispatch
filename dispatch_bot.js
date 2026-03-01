@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pdfParse from 'pdf-parse';
-import Tesseract from 'tesseract.js';
+import { createWorker } from 'tesseract.js';
 import pdfjsLib from 'pdfjs-dist';
 import { createCanvas } from 'canvas';
 
@@ -17,6 +17,44 @@ const __dirname = path.dirname(__filename);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+// ─────────────────────────────────────────────
+// FIX 4: Reuse a single Tesseract worker
+// instead of creating/destroying it every call
+// ─────────────────────────────────────────────
+let tesseractWorker = null;
+let workerReady = false;
+
+async function getTesseractWorker() {
+  if (!tesseractWorker || !workerReady) {
+    console.log('🔧 Initializing Tesseract worker...');
+    tesseractWorker = await createWorker('eng', 1, {
+      // suppress verbose Tesseract logs
+      logger: () => {}
+    });
+    workerReady = true;
+    console.log('✅ Tesseract worker ready and will be reused.');
+  }
+  return tesseractWorker;
+}
+
+// Initialize the worker at startup so the FIRST request is fast too
+getTesseractWorker().catch(console.error);
+
+// ─────────────────────────────────────────────
+// IMPROVEMENT: Graceful shutdown — terminate
+// Tesseract worker cleanly on exit
+// ─────────────────────────────────────────────
+async function shutdown() {
+  if (tesseractWorker && workerReady) {
+    console.log('Terminating Tesseract worker...');
+    await tesseractWorker.terminate();
+    workerReady = false;
+  }
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 // Initialize OpenAI client
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -35,11 +73,13 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-// -------- START COMMAND ----------
+// ─────────────────────────────────────────────
+// START COMMAND
+// ─────────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const firstName = msg.from.first_name;
-  
+
   const welcomeMessage = `👋 Hey ${firstName}!
 
 I'm your **Dispatch Assistant Bot** 🚛
@@ -53,31 +93,28 @@ Need help? Type /help`;
   await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
 });
 
-// -------- OCR FOR IMAGES ----------
+// ─────────────────────────────────────────────
+// FIX 4 APPLIED: OCR for images uses reused worker
+// ─────────────────────────────────────────────
 async function extractTextFromImage(imagePath) {
   try {
-    console.log(`=== STARTING OCR ===`);
+    console.log(`=== STARTING OCR (reused worker) ===`);
     console.log(`Image path: ${imagePath}`);
-    console.log(`File exists: ${fs.existsSync(imagePath)}`);
-    
-    if (fs.existsSync(imagePath)) {
-      const stats = fs.statSync(imagePath);
-      console.log(`File size: ${stats.size} bytes`);
-    }
-    
-    const { data: { text } } = await Tesseract.recognize(imagePath, 'eng', {
-      logger: info => {
-        if (info.status === 'recognizing text') {
-          console.log(`OCR Progress: ${Math.round(info.progress * 100)}%`);
-        }
-      }
+
+    const worker = await getTesseractWorker();
+
+    // IMPROVEMENT: set PSM 6 (assume uniform block of text)
+    // this speeds up recognition for document-style layouts
+    await worker.setParameters({
+      tessedit_pageseg_mode: '6',
     });
-    
+
+    const { data: { text } } = await worker.recognize(imagePath);
+
     console.log(`OCR completed. Text length: ${text.length}`);
-    console.log('First 200 characters of OCR text:');
-    console.log(text.substring(0, 200));
-    console.log('===================');
-    
+    console.log('First 200 characters:', text.substring(0, 200));
+    console.log('====================================');
+
     return text.trim();
   } catch (error) {
     console.error('OCR Error:', error);
@@ -85,35 +122,25 @@ async function extractTextFromImage(imagePath) {
   }
 }
 
-// -------- PDF TEXT EXTRACTION ----------
+// ─────────────────────────────────────────────
+// PDF TEXT EXTRACTION
+// ─────────────────────────────────────────────
 async function extractTextFromPDF(pdfPath) {
   try {
     console.log('=== PDF TEXT EXTRACTION ===');
-    console.log('PDF path:', pdfPath);
-    console.log('File exists:', fs.existsSync(pdfPath));
-    
-    if (fs.existsSync(pdfPath)) {
-      const stats = fs.statSync(pdfPath);
-      console.log('File size:', stats.size, 'bytes');
-    }
-    
-    console.log('Attempting to extract text from PDF...');
     const dataBuffer = fs.readFileSync(pdfPath);
     const data = await pdfParse(dataBuffer);
     const text = data.text.trim();
-    
+
     console.log(`Extracted text length: ${text.length}`);
-    console.log('First 300 characters:');
-    console.log(text.substring(0, 300));
-    
-    // If very little text was extracted, it's likely an image-based PDF
+    console.log('First 300 characters:', text.substring(0, 300));
+
     if (text.length < 100) {
-      console.log('⚠️ Minimal text detected (<100 chars). Using OCR...');
+      console.log('⚠️ Minimal text (<100 chars). Using OCR...');
       return await extractTextFromPDFWithOCR(pdfPath);
     }
-    
+
     console.log('✓ Text extraction successful');
-    console.log('===========================');
     return text;
   } catch (error) {
     console.error('PDF Parse Error:', error);
@@ -122,62 +149,56 @@ async function extractTextFromPDF(pdfPath) {
   }
 }
 
-// -------- PDF OCR EXTRACTION ----------
+// ─────────────────────────────────────────────
+// IMPROVEMENT: PDF OCR now processes pages in
+// PARALLEL instead of sequentially
+// ─────────────────────────────────────────────
 async function extractTextFromPDFWithOCR(pdfPath) {
   try {
     console.log('Converting PDF pages to images using PDF.js...');
-    
-    // Read PDF file
+
     const data = new Uint8Array(fs.readFileSync(pdfPath));
     const loadingTask = getDocument({
-      data: data,
+      data,
       useSystemFonts: true,
       standardFontDataUrl: 'node_modules/pdfjs-dist/standard_fonts/'
     });
     const pdf = await loadingTask.promise;
-    
-    console.log(`PDF has ${pdf.numPages} pages`);
-    
-    let fullText = '';
-    
-    // Process each page
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+
+    console.log(`PDF has ${pdf.numPages} pages — processing in parallel`);
+
+    // IMPROVEMENT: render all pages simultaneously
+    const pagePromises = Array.from({ length: pdf.numPages }, async (_, i) => {
+      const pageNum = i + 1;
+      const tempImagePath = path.join(__dirname, 'temp', `page_${pageNum}_${Date.now()}.png`);
+
       try {
         const page = await pdf.getPage(pageNum);
         const viewport = page.getViewport({ scale: 2.0 });
-        
-        // Create canvas
+
         const canvas = createCanvas(viewport.width, viewport.height);
         const context = canvas.getContext('2d');
-        
-        // Render PDF page to canvas
-        await page.render({
-          canvasContext: context,
-          viewport: viewport
-        }).promise;
-        
-        // Convert canvas to image buffer
-        const imageBuffer = canvas.toBuffer('image/png');
-        
-        // Save temporarily for OCR
-        const tempImagePath = path.join(__dirname, `temp_page_${pageNum}.png`);
-        fs.writeFileSync(tempImagePath, imageBuffer);
-        
-        console.log(`Processing page ${pageNum} with OCR: ${tempImagePath}`);
-        
-        // Extract text using OCR
+
+        await page.render({ canvasContext: context, viewport }).promise;
+
+        fs.writeFileSync(tempImagePath, canvas.toBuffer('image/png'));
+
+        console.log(`Processing page ${pageNum} with OCR...`);
         const pageText = await extractTextFromImage(tempImagePath);
-        fullText += `\n--- Page ${pageNum} ---\n${pageText}\n`;
-        
-        // Clean up temp image
-        if (fs.existsSync(tempImagePath)) {
-          fs.unlinkSync(tempImagePath);
-        }
+
+        return `\n--- Page ${pageNum} ---\n${pageText}`;
       } catch (err) {
-        console.error(`Error processing page ${pageNum}:`, err);
+        console.error(`Error on page ${pageNum}:`, err);
+        return `\n--- Page ${pageNum} --- [error]\n`;
+      } finally {
+        // Clean up temp image regardless of success/failure
+        if (fs.existsSync(tempImagePath)) fs.unlinkSync(tempImagePath);
       }
-    }
-    
+    });
+
+    const pages = await Promise.all(pagePromises);
+    const fullText = pages.join('\n');
+
     console.log(`Total OCR text length: ${fullText.length}`);
     return fullText;
   } catch (error) {
@@ -186,44 +207,57 @@ async function extractTextFromPDFWithOCR(pdfPath) {
   }
 }
 
-// -------- OPENAI DISPATCH EXTRACTION ----------
+// ─────────────────────────────────────────────
+// OPENAI DISPATCH EXTRACTION
+// ─────────────────────────────────────────────
 async function extractDispatchInfoWithAI(text) {
   console.log('=== SENDING TO AI ===');
   console.log('Text length:', text.length);
-  console.log('First 500 characters of text:');
-  console.log(text.substring(0, 500));
+  console.log('First 500 chars:', text.substring(0, 500));
   console.log('=====================');
-  
+
   const prompt = `You are an expert logistics dispatcher bot.
 
-Read the rate confirmation text below and extract the following fields:
+Read the rate confirmation text below and extract ALL stops — there may be MULTIPLE pickups and MULTIPLE deliveries. Do NOT skip or merge any stops.
+
+Extract:
 - Load #
 - REF #
-- Pickup (PU): date, time, shipper name, address
-- Delivery (DEL): date, time, receiver name, address
+- ALL Pickup stops (PU): each with date, time, shipper name, address, and PU# only if explicitly labeled
+- ALL Delivery stops (DEL): each with date, time, receiver name, address, and DEL# only if explicitly labeled
 - Rate
 - Miles
-- Fines or Notes
-- Any other important details or numbers found in the text.
+- Any other important details
 
-
-Return the answer in this exact format (if there is any additional info, include it):
+Return the answer in this EXACT format. Repeat the PU block for every pickup, DEL block for every delivery:
 
 Load# [number]
 
 REF# [reference number]
 
-⏳ PU: [pickup date + time (Earliest-Latest)]
-
+⏳ PU 1: [date + time]
+[PU# — ONLY if present in the document. If not found, skip this line completely. Do NOT write "Not found".]
 [shipper name]
 [address line 1]
-[address line 2 if any]
+[city, state zip]
 
-⏳ DEL: [delivery date + time (Earliest-Latest)]
+⏳ PU 2: [date + time]   ← only include if there is a 2nd pickup, repeat for PU 3, PU 4 etc.
+[PU# — only if present, otherwise skip this line]
+[shipper name]
+[address line 1]
+[city, state zip]
 
+⏳ DEL 1: [date + time]
+[DEL# — ONLY if present in the document. If not found, skip this line completely. Do NOT write "Not found".]
 [receiver name]
 [address line 1]
-[address line 2 if any]
+[city, state zip]
+
+⏳ DEL 2: [date + time]   ← only include if there is a 2nd delivery, repeat for DEL 3, DEL 4 etc.
+[DEL# — only if present, otherwise skip this line]
+[receiver name]
+[address line 1]
+[city, state zip]
 
 _____
 
@@ -237,14 +271,21 @@ Mile: [miles] miles
 
 Your communication is really going smoothly❗️
 
-If any field is missing, write "Not found" but **keep the format identical**.
+RULES:
+- NEVER merge multiple stops into one
+- NEVER skip any pickup or delivery stop
+- For PU# and DEL#: only include if explicitly present — otherwise skip that line, never write "Not found"
+- Keep the format identical
+- CRITICAL — IGNORE these addresses completely, do NOT treat them as pickup or delivery stops:
+  * Carrier company office or home address
+  * Broker or freight company office address
+  * Any address labeled: "Carrier Address", "Broker Address", "Remit To", "Bill To", "Factor To", "Pay To", "Office", "Corporate", "Headquarters"
+  * Only use addresses that have a scheduled pickup or delivery date/time attached to them
 
 ---
 RATE CONFIRMATION TEXT:
 ${text}`;
 
-  console.log('Calling OpenAI API...');
-  
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
@@ -255,140 +296,110 @@ ${text}`;
   });
 
   const result = response.choices[0].message.content.trim();
-  
-  console.log('=== AI RESPONSE ===');
-  console.log(result);
-  console.log('===================');
-
+  console.log('=== AI RESPONSE ===\n', result, '\n===================');
   return result;
 }
 
-// -------- TELEGRAM HANDLERS ----------
+// ─────────────────────────────────────────────
+// IMPROVEMENT: Shared file download helper
+// (removes duplicated code in photo + document)
+// ─────────────────────────────────────────────
+async function downloadTelegramFile(fileId, destPath) {
+  const file = await bot.getFile(fileId);
+  const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+
+  console.log(`Downloading: ${fileUrl}`);
+
+  const https = await import('https');
+  const fileStream = fs.createWriteStream(destPath);
+
+  await new Promise((resolve, reject) => {
+    https.get(fileUrl, (response) => {
+      response.pipe(fileStream);
+      fileStream.on('finish', () => { fileStream.close(); resolve(); });
+    }).on('error', reject);
+  });
+
+  console.log('Download complete.');
+}
+
+// ─────────────────────────────────────────────
+// TELEGRAM: PDF HANDLER
+// ─────────────────────────────────────────────
 bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
   const document = msg.document;
-  
-  // Check if it's a PDF
-  if (!document.mime_type || !document.mime_type.includes('pdf')) {
-    return;
-  }
-  
-  const fileId = document.file_id;
-  const fileName = document.file_name || `temp_${fileId}.pdf`;
-  const filePath = path.join(__dirname, fileName);
-  
+
+  if (!document.mime_type || !document.mime_type.includes('pdf')) return;
+
+  const fileName = document.file_name || `temp_${document.file_id}.pdf`;
+  const filePath = path.join(__dirname, 'temp', fileName);
+
   try {
     await bot.sendMessage(chatId, '📄 PDF received. Extracting info... Please wait ⏳');
-    
-    // Download the file
-    const file = await bot.getFile(fileId);
-    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-    
-    console.log(`Downloading file: ${fileUrl}`);
-    
-    // Download file
-    const https = await import('https');
-    const fileStream = fs.createWriteStream(filePath);
-    
-    await new Promise((resolve, reject) => {
-      https.get(fileUrl, (response) => {
-        response.pipe(fileStream);
-        fileStream.on('finish', () => {
-          fileStream.close();
-          resolve();
-        });
-      }).on('error', reject);
-    });
-    
-    console.log('File downloaded successfully');
-    
-    // Extract text
+
+    await downloadTelegramFile(document.file_id, filePath);
+
     const text = await extractTextFromPDF(filePath);
-    
+
     if (!text || text.length < 50) {
       await bot.sendMessage(chatId, '⚠️ Could not extract text from PDF. Please ensure the file is readable.');
       return;
     }
-    
-    console.log('Text extracted, sending to AI...');
-    
-    // Process with AI
+
     const result = await extractDispatchInfoWithAI(text);
     await bot.sendMessage(chatId, result);
-    
+
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Document Error:', error);
     await bot.sendMessage(chatId, `⚠️ Error: ${error.message}`);
   } finally {
-    // Clean up
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
 });
 
+// ─────────────────────────────────────────────
+// TELEGRAM: PHOTO HANDLER
+// ─────────────────────────────────────────────
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
-  const photo = msg.photo[msg.photo.length - 1]; // Get highest resolution
-  const fileId = photo.file_id;
-  const filePath = path.join(__dirname, `temp_${fileId}.jpg`);
-  
+  const photo = msg.photo[msg.photo.length - 1]; // highest resolution
+  const filePath = path.join(__dirname, 'temp', `photo_${photo.file_id}.jpg`);
+
   try {
     await bot.sendMessage(chatId, '📷 Image received. Extracting text with OCR... Please wait ⏳');
-    
-    // Download the file
-    const file = await bot.getFile(fileId);
-    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-    
-    console.log(`Downloading image: ${fileUrl}`);
-    
-    // Download file
-    const https = await import('https');
-    const fileStream = fs.createWriteStream(filePath);
-    
-    await new Promise((resolve, reject) => {
-      https.get(fileUrl, (response) => {
-        response.pipe(fileStream);
-        fileStream.on('finish', () => {
-          fileStream.close();
-          resolve();
-        });
-      }).on('error', reject);
-    });
-    
-    console.log('Image downloaded, starting OCR...');
-    
-    // Extract text using OCR
+
+    await downloadTelegramFile(photo.file_id, filePath);
+
     const text = await extractTextFromImage(filePath);
-    
+
     if (!text || text.length < 50) {
       await bot.sendMessage(chatId, '⚠️ Could not extract text from image. Please ensure the image is clear and readable.');
       return;
     }
-    
-    console.log('OCR completed, sending to AI...');
-    
-    // Process with AI
+
     const result = await extractDispatchInfoWithAI(text);
     await bot.sendMessage(chatId, result);
-    
+
   } catch (error) {
-    console.error('Error processing image:', error);
+    console.error('Photo Error:', error);
     await bot.sendMessage(chatId, `⚠️ Error processing image: ${error.message}`);
   } finally {
-    // Clean up
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
 });
 
-// Create temp directory if it doesn't exist
-if (!fs.existsSync('./temp')) {
-  fs.mkdirSync('./temp');
+// ─────────────────────────────────────────────
+// IMPROVEMENT: Ensure temp directory exists
+// ─────────────────────────────────────────────
+const tempDir = path.join(__dirname, 'temp');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir, { recursive: true });
 }
 
-// -------- START SERVER ----------
+// ─────────────────────────────────────────────
+// START SERVER
+// ─────────────────────────────────────────────
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, '0.0.0.0', () => {
