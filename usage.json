@@ -1,12 +1,12 @@
 {
-  "totalProcessed": 2,
-  "today": 2,
-  "lastDate": "2026-03-01",
+  "totalProcessed": 5,
+  "today": 1,
+  "lastDate": "2026-03-02",
   "users": {
     "6392542039": {
       "name": "Azizboy Hakimov",
-      "count": 2,
-      "lastUsed": "2026-03-01T17:06:54.078Z"
+      "count": 5,
+      "lastUsed": "2026-03-02T00:49:57.736Z"
     }
   }
 }

@@ -7,9 +7,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import pdfParse from 'pdf-parse';
 import pdfjsLib from 'pdfjs-dist';
-import { createCanvas } from 'canvas';
+import { createCanvas, DOMMatrix } from 'canvas';
 
 const { getDocument } = pdfjsLib;
+
+// Polyfill DOMMatrix globally for pdfjs-dist
+if (typeof globalThis.DOMMatrix === 'undefined') {
+  globalThis.DOMMatrix = DOMMatrix;
+}
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -367,47 +372,48 @@ async function extractTextFromImageWithVision(imagePath) {
 
 // ─────────────────────────────────────────────
 // PDF EXTRACTION
-// Step 1: Try direct text extraction (fast, free)
-// Step 2: If image-based PDF, render each page
-//         and send to GPT-4o Vision
+// Sends the PDF directly to GPT-4o as base64.
+// GPT-4o natively reads PDFs — no page rendering,
+// no pdfjs, no DOMMatrix errors.
+// Falls back to pdf-parse for text-based PDFs
+// to save cost when possible.
 // ─────────────────────────────────────────────
 async function extractTextFromPDF(pdfPath) {
   try {
+    // First try direct text extraction (fast, free, works on text-based PDFs)
     console.log('[PDF] Attempting direct text extraction...');
     const data = await pdfParse(fs.readFileSync(pdfPath));
     const text = data.text.trim();
 
-    if (text.length >= 100) {
+    if (text.length >= 1000) {
       console.log(`[PDF] Direct extraction successful. Length: ${text.length}`);
       return text;
     }
 
-    console.log('[PDF] Image-based PDF detected — switching to Vision...');
-    return await extractPDFWithVision(pdfPath);
+    // Not enough text — send the whole PDF to GPT-4o Vision as base64
+    console.log(`[PDF] Text too short (${text.length} chars) — sending PDF directly to GPT-4o...`);
+    return await extractPDFWithGPT(pdfPath);
 
   } catch (error) {
     console.error('[PDF] Parse error:', error.message);
-    return await extractPDFWithVision(pdfPath);
+    return await extractPDFWithGPT(pdfPath);
   }
 }
 
-async function extractPDFWithVision(pdfPath) {
+// Render each PDF page to PNG image, send each to GPT-4o Vision.
+// Pages processed sequentially to avoid race conditions.
+async function extractPDFWithGPT(pdfPath) {
   try {
     const data = new Uint8Array(fs.readFileSync(pdfPath));
-    const pdf  = await getDocument({
-      data,
-      useSystemFonts:      true,
-      standardFontDataUrl: 'node_modules/pdfjs-dist/standard_fonts/'
-    }).promise;
+    const pdf  = await getDocument({ data, useSystemFonts: true }).promise;
 
-    console.log(`[PDF Vision] ${pdf.numPages} pages — processing in parallel`);
+    console.log(`[PDF GPT] ${pdf.numPages} pages — rendering to images...`);
 
-    const pagePromises = Array.from({ length: pdf.numPages }, async (_, i) => {
-      const pageNum = i + 1;
-      const tmpPath = path.join(__dirname, 'temp', `pg_${pageNum}_${Date.now()}.png`);
-
+    const pageTexts = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const tmpPath = path.join(__dirname, 'temp', `pg_${i}_${Date.now()}.png`);
       try {
-        const page     = await pdf.getPage(pageNum);
+        const page     = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 2.0 });
         const canvas   = createCanvas(viewport.width, viewport.height);
 
@@ -415,22 +421,21 @@ async function extractPDFWithVision(pdfPath) {
         fs.writeFileSync(tmpPath, canvas.toBuffer('image/png'));
 
         const text = await extractTextFromImageWithVision(tmpPath);
-        return `\n--- Page ${pageNum} ---\n${text}`;
-
+        console.log(`[PDF GPT] Page ${i} done. Length: ${text.length}`);
+        pageTexts.push(`\n--- Page ${i} ---\n${text}`);
       } catch (err) {
-        console.error(`[PDF Vision] Page ${pageNum} error:`, err.message);
-        return `\n--- Page ${pageNum} --- [error]\n`;
+        console.error(`[PDF GPT] Page ${i} error:`, err.message);
       } finally {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
       }
-    });
+    }
 
-    const pages = await Promise.all(pagePromises);
-    console.log('[PDF Vision] Done.');
-    return pages.join('\n');
+    const result = pageTexts.join('\n');
+    console.log(`[PDF GPT] All pages done. Total: ${result.length} chars`);
+    return result;
 
   } catch (error) {
-    console.error('[PDF Vision] Error:', error.message);
+    console.error('[PDF GPT] Fatal error:', error.message);
     return '';
   }
 }
@@ -448,7 +453,7 @@ Read the rate confirmation text below and extract ALL stops.
 There may be MULTIPLE pickups and MULTIPLE deliveries — do NOT skip or merge any.
 
 Extract:
-- Load #
+- Load # (may be labeled as Trip#, Load#, Order#, Pro# — NOT the Rate Confirmation ID or audit trail ID)
 - REF # (reference number from broker)
 - Need Trailer line if present (e.g. "Need Trailer / One way")
 - Load type if present (e.g. "Live/Live", "Drop/Live")
