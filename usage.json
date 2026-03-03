@@ -1,12 +1,17 @@
 {
-  "totalProcessed": 6,
-  "today": 2,
-  "lastDate": "2026-03-02",
+  "totalProcessed": 14,
+  "today": 8,
+  "lastDate": "2026-03-03",
   "users": {
     "6392542039": {
       "name": "Azizboy Hakimov",
-      "count": 6,
-      "lastUsed": "2026-03-02T01:52:38.873Z"
+      "count": 11,
+      "lastUsed": "2026-03-03T11:09:03.118Z"
+    },
+    "8553069184": {
+      "name": "Rais Ralph",
+      "count": 3,
+      "lastUsed": "2026-03-03T11:16:46.370Z"
     }
   }
 }

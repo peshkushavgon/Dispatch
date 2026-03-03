@@ -59,6 +59,12 @@ const processingUsers  = new Set();
 const recentlyFinished = new Set(); // brief cooldown after mileage sent
 const pendingLocations = new Map(); // stores location reply that arrived while still processing
 
+// Escape Markdown special characters in user-provided strings
+// so Telegram doesn't choke on names like 𝑩𝒆𝒌𝒛𝒐𝒅_𝑻𝒓 or O'Brien
+function escMd(str) {
+  return String(str || '').replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+}
+
 // ─────────────────────────────────────────────
 // DISK-BACKED CONVERSATION STATE
 //
@@ -331,111 +337,109 @@ async function calculateAndSendMileage(chatId, truckLocation, state) {
   }
 }
 // ─────────────────────────────────────────────
-// GPT-4o VISION
-// Sends image directly to GPT-4o — no Tesseract.
-// Much faster and handles blurry/phone photos.
+// OCR: EXTRACT RAW TEXT FROM IMAGE
+// Sole job: return raw text from one image.
+// Called per page for PDFs, directly for photos.
 // ─────────────────────────────────────────────
-async function extractTextFromImageWithVision(imagePath) {
-  try {
-    console.log(`[VISION] Processing: ${imagePath}`);
-    const imageBuffer = fs.readFileSync(imagePath);
-    const base64      = imageBuffer.toString('base64');
-    const mimeType    = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+async function ocrImage(imagePath) {
+  const imageBuffer = fs.readFileSync(imagePath);
+  const base64      = imageBuffer.toString('base64');
+  const mimeType    = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' }
-          },
-          {
-            type: 'text',
-            text: 'Extract ALL text from this rate confirmation document exactly as it appears. Preserve every number, address, date, time, and reference number accurately. Return only the raw extracted text.'
-          }
-        ]
-      }],
-      max_tokens: 2000
-    });
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [{
+      role: 'user',
+      content: [
+        {
+          type: 'image_url',
+          image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' }
+        },
+        {
+          type: 'text',
+          text: `You are an OCR engine. Extract ALL text from this document exactly as it appears.
+Preserve every word, number, address, date, time, name, and reference number.
+Do NOT summarize, skip, or interpret anything.
+Return ONLY the raw extracted text, nothing else.`
+        }
+      ]
+    }],
+    max_tokens: 4000
+  });
 
-    const text = response.choices[0].message.content.trim();
-    console.log(`[VISION] Done. Length: ${text.length}`);
-    return text;
-
-  } catch (error) {
-    console.error('[VISION] Error:', error.message);
-    return '';
-  }
+  return response.choices[0].message.content.trim();
 }
 
 // ─────────────────────────────────────────────
-// PDF EXTRACTION
-// Sends the PDF directly to GPT-4o as base64.
-// GPT-4o natively reads PDFs — no page rendering,
-// no pdfjs, no DOMMatrix errors.
-// Falls back to pdf-parse for text-based PDFs
-// to save cost when possible.
+// PDF TEXT EXTRACTION
+// Step 1: pdf-parse (fast, free, for text PDFs)
+// Step 2: pdfjs render each page → ocrImage
+//         Pages done sequentially — no race conditions
 // ─────────────────────────────────────────────
 async function extractTextFromPDF(pdfPath) {
+  // Step 1: Try pdf-parse first (fast, works on text-based PDFs)
+  // Step 2: Fall back to Vision only if extraction fails or too short
   try {
-    // First try direct text extraction (fast, free, works on text-based PDFs)
-    console.log('[PDF] Attempting direct text extraction...');
-    const data = await pdfParse(fs.readFileSync(pdfPath));
-    const text = data.text.trim();
-
-    if (text.length >= 1000) {
-      console.log(`[PDF] Direct extraction successful. Length: ${text.length}`);
+    console.log('[PDF] Trying direct text extraction...');
+    const parsed = await pdfParse(fs.readFileSync(pdfPath));
+    const text   = parsed.text.trim();
+    if (text.length >= 300) {
+      console.log(`[PDF] Direct extraction OK. ${text.length} chars`);
       return text;
     }
-
-    // Not enough text — send the whole PDF to GPT-4o Vision as base64
-    console.log(`[PDF] Text too short (${text.length} chars) — sending PDF directly to GPT-4o...`);
-    return await extractPDFWithGPT(pdfPath);
-
-  } catch (error) {
-    console.error('[PDF] Parse error:', error.message);
-    return await extractPDFWithGPT(pdfPath);
+    console.log(`[PDF] Only ${text.length} chars — trying Vision...`);
+  } catch (e) {
+    console.log('[PDF] pdf-parse failed:', e.message);
   }
-}
 
-// Render each PDF page to PNG image, send each to GPT-4o Vision.
-// Pages processed sequentially to avoid race conditions.
-async function extractPDFWithGPT(pdfPath) {
+  // ── Step 2: Render pages and OCR each one ──
   try {
     const data = new Uint8Array(fs.readFileSync(pdfPath));
     const pdf  = await getDocument({ data, useSystemFonts: true }).promise;
+    console.log(`[PDF Vision] Rendering ${pdf.numPages} pages...`);
 
-    console.log(`[PDF GPT] ${pdf.numPages} pages — rendering to images...`);
-
-    const pageTexts = [];
+    const allText = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       const tmpPath = path.join(__dirname, 'temp', `pg_${i}_${Date.now()}.png`);
       try {
         const page     = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.0 });
+        const viewport = page.getViewport({ scale: 2.5 }); // higher scale = better OCR
         const canvas   = createCanvas(viewport.width, viewport.height);
 
         await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
         fs.writeFileSync(tmpPath, canvas.toBuffer('image/png'));
 
-        const text = await extractTextFromImageWithVision(tmpPath);
-        console.log(`[PDF GPT] Page ${i} done. Length: ${text.length}`);
-        pageTexts.push(`\n--- Page ${i} ---\n${text}`);
+        const pageText = await ocrImage(tmpPath);
+        console.log(`[PDF Vision] Page ${i}: ${pageText.length} chars`);
+        if (pageText.length > 20) allText.push(`--- Page ${i} ---\n${pageText}`);
       } catch (err) {
-        console.error(`[PDF GPT] Page ${i} error:`, err.message);
+        console.error(`[PDF Vision] Page ${i} error:`, err.message);
       } finally {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
       }
     }
 
-    const result = pageTexts.join('\n');
-    console.log(`[PDF GPT] All pages done. Total: ${result.length} chars`);
+    const result = allText.join('\n\n');
+    console.log(`[PDF Vision] Done. Total: ${result.length} chars`);
     return result;
 
   } catch (error) {
-    console.error('[PDF GPT] Fatal error:', error.message);
+    console.error('[PDF Vision] Fatal:', error.message);
+    return '';
+  }
+}
+
+// ─────────────────────────────────────────────
+// PHOTO EXTRACTION — direct OCR
+// ─────────────────────────────────────────────
+async function extractTextFromImageWithVision(imagePath) {
+  try {
+    console.log(`[VISION] Processing: ${path.basename(imagePath)}`);
+    const text = await ocrImage(imagePath);
+    console.log(`[VISION] Done. ${text.length} chars`);
+    return text;
+  } catch (error) {
+    console.error('[VISION] Error:', error.message);
     return '';
   }
 }
@@ -447,53 +451,63 @@ async function extractPDFWithGPT(pdfPath) {
 async function extractDispatchInfoWithAI(text) {
   console.log('[AI] Extracting dispatch info...');
 
-  const prompt = `You are an expert logistics dispatcher bot.
+  const prompt = `You are extracting pickup and delivery stops from a trucking rate confirmation.
 
-Read the rate confirmation text below and extract ALL stops.
-There may be MULTIPLE pickups and MULTIPLE deliveries — do NOT skip or merge any.
+IMPORTANT — HOW TO READ THIS DOCUMENT:
+Some PDFs have multi-column table layouts. When converted to text, columns get scrambled.
+The raw text may show addresses in the wrong order. Use these rules to assign them correctly:
 
-Extract:
-- Load # (may be labeled as Trip#, Load#, Order#, Pro# — NOT the Rate Confirmation ID or audit trail ID)
-- REF # (reference number from broker)
-- Need Trailer line if present (e.g. "Need Trailer / One way")
-- Load type if present (e.g. "Live/Live", "Drop/Live")
-- ALL Pickup stops: date, time, shipper name, full address, PU# only if labeled
-- ALL Delivery stops: date, time, receiver name, full address, DEL# only if labeled
-- Rate
-- Miles (from rate con)
+1. Find all section headers: "PICK UP", "PICKUP", "Shipper", "Load Date" → these mark PICKUP sections
+2. Find all section headers: "DELIVER", "DELIVERY", "Drop", "Consignee", "Deliv. Date" → these mark DELIVERY sections  
+3. The address CLOSEST AFTER each section header belongs to that section
+4. Any address appearing BEFORE the first PICK UP header = carrier/broker office address → IGNORE IT
+5. Common carrier info labels to ignore: CARRIER NAME, CITY/ST, EMAIL, PHONE, CONTACT
 
-Return ONLY this JSON (no markdown, no backticks, no explanation):
+EXAMPLE of scrambled text and correct extraction:
+  Text shows: "JM KINGSBURY / 915 KINGSBURY / MAUMEE OH 43537" (before PICK UP header) → IGNORE (carrier address)
+  Text shows: "PICK UP: Sunday 3/1/2026" → start of pickup section
+  Text shows: "AMERCIAN GYPSUM COMPANY / 740 HIGHWAY 6 / GYPSUM CO 81637" (after PICK UP) → PICKUP location
+  Text shows: "DELIVER: Tuesday 3/3/2026" → start of delivery section
+  (delivery address may appear scrambled elsewhere) → match it to DELIVER section
+
+LOAD NUMBER: Trip#, Load#, Order#, Pro#, Confirmation# — NOT Rate Confirmation ID or Audit ID
+
+Return ONLY this JSON (no markdown, no backticks):
 {
-  "loadNumber": "60113353338",
-  "refNumber": "ABC123",
-  "trailerNote": "Need Trailer / One way",
-  "loadType": "Live/Live",
+  "loadNumber": "20046797",
+  "refNumber": "",
+  "trailerNote": "",
+  "loadType": "",
   "pickups": [
-    { "datetime": "ASAP till 4PM", "name": "MPR LOGISTICS DBA HSS LOGISTICS", "street": "4111 Ellison St NE", "cityStateZip": "Albuquerque, NM 87109" }
+    { "datetime": "Sunday 3/1/2026 8:00AM to 4:00PM", "name": "AMERCIAN GYPSUM COMPANY", "street": "740 HIGHWAY 6", "cityStateZip": "GYPSUM, CO 81637" }
   ],
   "deliveries": [
-    { "datetime": "02/27/26 08:00 AM", "name": "Actionpaq", "street": "2120 Town West Dr", "cityStateZip": "Rogers, AR 72756" }
+    { "datetime": "Tuesday 3/3/2026 7:00AM to 11:00AM", "name": "JM KINGSBURY", "street": "915 KINGSBURY", "cityStateZip": "MAUMEE, OH 43537" }
   ],
-  "rate": "2500",
-  "rateConMiles": 771
+  "bolNumber": "7103495666",
+  "puNumber": "7103495666",
+  "rate": "3800",
+  "rateConMiles": null
 }
 
-RULES:
-- Do NOT extract puNumber or delNumber — these are not needed
-- trailerNote / loadType: only fill if present, otherwise empty string
-- rateConMiles: number only, null if not found
-- street: ONLY the street number + street name (e.g. "3808 North Sullivan Road") — NO city, state, or zip
-- cityStateZip: ONLY city, state, zip and country if present (e.g. "Spokane Valley, WA US 99216")
-- IGNORE broker/carrier office addresses, Remit To, Bill To, Pay To, Factor To addresses
-- Only include addresses that have a scheduled pickup or delivery date/time
+FIELD RULES:
+- datetime: date + time exactly as written
+- name: exact company name under that section header
+- street: street number and name ONLY — no city/state/zip
+- cityStateZip: city, state, zip ONLY — no street
+- "" for any missing string field, null for missing rateConMiles
+- bolNumber: Bill of Lading number (BOL, Bill of Lading, B/L) — "" if not found
+- puNumber: Pickup number (PU#, Pick up #, Pickup#) — "" if not found
+- Include ALL stops — never skip any pickup or delivery
+- IGNORE: Remit To, Bill To, Pay To, Factor To, Invoice To, any address before first PICK UP header
 
 RATE CONFIRMATION TEXT:
 ${text}`;
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
     messages: [
-      { role: 'system', content: 'You extract logistics data and return only valid JSON.' },
+      { role: 'system', content: 'You are a logistics data extractor. Return only valid JSON with no markdown.' },
       { role: 'user',   content: prompt }
     ],
     temperature: 0,
@@ -525,43 +539,37 @@ function buildFinalMessage(data, deadheadMiles, loadedMiles) {
 `;
   if (data.loadType)    msg += `*${data.loadType}*
 `;
-  if (data.loadNumber)  msg += `*Load# ${data.loadNumber}*
-`;
-  if (data.refNumber)   msg += `*REF# ${data.refNumber}*
-`;
-  else                  msg += `*PU#: N/A*
-`;
-  msg += `${DIV}
-`;
+  if (data.loadNumber)  msg += `*Load# ${data.loadNumber}*\n`;
+  if (data.refNumber)   msg += `*REF# ${data.refNumber}*\n`;
+  if (data.bolNumber)   msg += `*BOL#: ${data.bolNumber}*\n`;
+  if (data.puNumber && data.puNumber !== data.bolNumber) msg += `*PU#: ${data.puNumber}*\n`;
+  if (!data.refNumber && !data.bolNumber && !data.puNumber) msg += `*PU#: N/A*\n`;
+  msg += `${DIV}\n`;
 
   // ── Pickups ──
   data.pickups.forEach((pu, i) => {
     const label = data.pickups.length > 1 ? `PU ${i + 1}:` : `PU:`;
-    msg += `*${label} ${pu.datetime}*
-`;
-    msg += `${pu.name}
-`;
-    msg += `${pu.street}
-`;
-    msg += `${pu.cityStateZip}
-`;
-    msg += `${DIV}
-`;
+    msg += `*${label} ${pu.datetime || 'TBD'}*\n`;
+    if (pu.name)         msg += `${pu.name}\n`;
+    if (pu.street)       msg += `${pu.street}\n`;
+    if (pu.cityStateZip) msg += `${pu.cityStateZip}\n`;
+    if (!pu.name && !pu.street && !pu.cityStateZip) {
+      msg += `⚠️ Address not extracted — check rate con\n`;
+    }
+    msg += `${DIV}\n`;
   });
 
   // ── Deliveries ──
   data.deliveries.forEach((del, i) => {
     const label = data.deliveries.length > 1 ? `DEL ${i + 1}:` : `DEL:`;
-    msg += `*${label} ${del.datetime}*
-`;
-    msg += `${del.name}
-`;
-    msg += `${del.street}
-`;
-    msg += `${del.cityStateZip}
-`;
-    msg += `
-`;
+    msg += `*${label} ${del.datetime || 'TBD'}*\n`;
+    if (del.name)        msg += `${del.name}\n`;
+    if (del.street)      msg += `${del.street}\n`;
+    if (del.cityStateZip) msg += `${del.cityStateZip}\n`;
+    if (!del.name && !del.street && !del.cityStateZip) {
+      msg += `⚠️ Address not extracted — check rate con\n`;
+    }
+    msg += `\n`;
   });
 
   // ── Mileage — own section with dividers ──
@@ -669,21 +677,22 @@ Type /cancel to skip.`,
     console.log('[DISPATCH DATA]', JSON.stringify(dispatchData).substring(0, 200));
     console.log('[ADDRESSES]', JSON.stringify(addresses));
 
-    const hasAddresses = addresses && addresses.pickups?.length > 0 && addresses.deliveries?.length > 0;
+    const hasPickups    = addresses?.pickups?.length > 0;
+    const hasDeliveries = addresses?.deliveries?.length > 0;
 
-    if (hasAddresses) {
-      // Step 5: Update state with full data — now ready to handle location reply
+    if (hasPickups || hasDeliveries) {
+      // Save state — even if only pickups or only deliveries found
+      // We can still calculate deadhead with just pickups
       setState(chatId, {
         state:        'waiting_for_location',
-        pickups:      addresses.pickups,
-        deliveries:   addresses.deliveries,
+        pickups:      addresses.pickups    || [],
+        deliveries:   addresses.deliveries || [],
         rateConMiles: dispatchData.rateConMiles ?? null,
         dispatchData: dispatchData
       });
-      console.log('[PROCESS] State updated to waiting_for_location');
+      console.log(`[PROCESS] State saved — pickups:${addresses.pickups?.length || 0} deliveries:${addresses.deliveries?.length || 0}`);
 
-      // If the user already replied with their location while we were processing,
-      // use it now — no need to wait for them to reply again
+      // If user already replied with location while processing, use it now
       if (pendingLocations.has(chatId)) {
         const savedLocation = pendingLocations.get(chatId);
         pendingLocations.delete(chatId);
@@ -691,9 +700,10 @@ Type /cancel to skip.`,
         const readyState = getState(chatId);
         await calculateAndSendMileage(chatId, savedLocation, readyState);
       }
+
     } else {
-      // No addresses — send dispatch message without mileage and clear state
-      console.log('[PROCESS] No addresses extracted — sending dispatch without mileage');
+      // No usable addresses at all — send without mileage
+      console.log('[PROCESS] No addresses found — sending dispatch without mileage');
       deleteState(chatId);
       const fallbackMsg = buildFinalMessage(dispatchData, null, null);
       await bot.sendMessage(chatId, fallbackMsg, { parse_mode: 'Markdown' });
@@ -714,7 +724,7 @@ Type /cancel to skip.`,
 // ─────────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const { chat: { id: chatId }, from: { first_name } } = msg;
-  await bot.sendMessage(chatId, `👋 Hey ${first_name}!
+  await bot.sendMessage(chatId, `👋 Hey ${escMd(first_name)}!
 
 I'm your *Dispatch Assistant Bot* 🚛
 
