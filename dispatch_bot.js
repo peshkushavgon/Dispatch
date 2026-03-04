@@ -298,10 +298,19 @@ function extractAddressesFromDispatchData(dispatchData) {
 //   📦 Loaded:   first pickup    → last delivery
 //   📊 Total:    deadhead + loaded
 // ─────────────────────────────────────────────
+const sendingMileage = new Set(); // guard against double-sends
+
 async function calculateAndSendMileage(chatId, truckLocation, state) {
+  // Guard: prevent duplicate mileage sends if called twice rapidly
+  if (sendingMileage.has(chatId)) {
+    console.log(`[MILEAGE] Already calculating for ${chatId} — ignoring duplicate call`);
+    return;
+  }
+  sendingMileage.add(chatId);
+
   try {
     // Guard: if dispatchData is missing (stale state from a crashed run), bail out
-    if (!state.dispatchData || !state.pickups || !state.deliveries) {
+    if (!state || !state.dispatchData || !state.pickups || !state.deliveries) {
       await bot.sendMessage(chatId, '⚠️ Something went wrong with this load — please resend the rate confirmation.');
       deleteState(chatId);
       return;
@@ -330,10 +339,11 @@ async function calculateAndSendMileage(chatId, truckLocation, state) {
     console.error('[MILEAGE] Error:', error.message);
     await bot.sendMessage(chatId, '⚠️ Something went wrong calculating mileage. Please try again.');
   } finally {
+    sendingMileage.delete(chatId);
     deleteState(chatId);
-    // 3-second cooldown so any immediate follow-up text isn't misread
+    // 10-second cooldown so follow-up texts after mileage aren't misread
     recentlyFinished.add(chatId);
-    setTimeout(() => recentlyFinished.delete(chatId), 3000);
+    setTimeout(() => recentlyFinished.delete(chatId), 10000);
   }
 }
 // ─────────────────────────────────────────────
@@ -383,39 +393,56 @@ async function extractTextFromPDF(pdfPath) {
     console.log('[PDF] Trying direct text extraction...');
     const parsed = await pdfParse(fs.readFileSync(pdfPath));
     const text   = parsed.text.trim();
-    if (text.length >= 300) {
-      console.log(`[PDF] Direct extraction OK. ${text.length} chars`);
+    // Check for garbled/unreadable text:
+    // 1. CID font encoding — shows as (cid:N) in raw text
+    // 2. Node pdf-parse silently strips CID chars → mostly whitespace remains
+    //    Detect by checking ratio of actual word characters to total length
+    const cidCount    = (text.match(/\(cid:\d+\)/g) || []).length;
+    const wordChars   = (text.match(/[a-zA-Z0-9]/g) || []).length;
+    const wordRatio   = wordChars / Math.max(text.length, 1);
+    const isGarbled   = cidCount > 5 || wordRatio < 0.1; // less than 10% real chars = garbage
+
+    if (text.length >= 300 && !isGarbled) {
+      console.log(`[PDF] Direct extraction OK. ${text.length} chars (wordRatio: ${wordRatio.toFixed(2)})`);
       return text;
     }
-    console.log(`[PDF] Only ${text.length} chars — trying Vision...`);
+    console.log(`[PDF] Unreadable text (${text.length} chars, wordRatio:${wordRatio.toFixed(2)}, cid:${cidCount}) — using Vision...`);
   } catch (e) {
     console.log('[PDF] pdf-parse failed:', e.message);
   }
 
-  // ── Step 2: Render pages and OCR each one ──
+  // ── Step 2: Render pages using pdftoppm (handles all font types) ──
+  return await renderPDFWithPdftoppm(pdfPath);
+}
+
+async function renderPDFWithPdftoppm(pdfPath) {
+  const { execSync } = await import('child_process');
+  const prefix = path.join(__dirname, 'temp', `pdf_${Date.now()}`);
+  const allText = [];
+
   try {
-    const data = new Uint8Array(fs.readFileSync(pdfPath));
-    const pdf  = await getDocument({ data, useSystemFonts: true }).promise;
-    console.log(`[PDF Vision] Rendering ${pdf.numPages} pages...`);
+    // Render all pages to PNG at 250dpi — good quality for OCR
+    execSync(`pdftoppm -r 250 -png "${pdfPath}" "${prefix}"`, { stdio: 'pipe' });
 
-    const allText = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const tmpPath = path.join(__dirname, 'temp', `pg_${i}_${Date.now()}.png`);
+    // Find all generated pages (sorted)
+    const tempDir = path.join(__dirname, 'temp');
+    const baseName = path.basename(prefix);
+    const pageFiles = fs.readdirSync(tempDir)
+      .filter(f => f.startsWith(baseName) && f.endsWith('.png'))
+      .sort()
+      .map(f => path.join(tempDir, f));
+
+    console.log(`[PDF Vision] ${pageFiles.length} pages rendered by pdftoppm`);
+
+    for (let i = 0; i < pageFiles.length; i++) {
       try {
-        const page     = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.5 }); // higher scale = better OCR
-        const canvas   = createCanvas(viewport.width, viewport.height);
-
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-        fs.writeFileSync(tmpPath, canvas.toBuffer('image/png'));
-
-        const pageText = await ocrImage(tmpPath);
-        console.log(`[PDF Vision] Page ${i}: ${pageText.length} chars`);
-        if (pageText.length > 20) allText.push(`--- Page ${i} ---\n${pageText}`);
+        const pageText = await ocrImage(pageFiles[i]);
+        console.log(`[PDF Vision] Page ${i + 1}: ${pageText.length} chars`);
+        if (pageText.length > 20) allText.push(`--- Page ${i + 1} ---\n${pageText}`);
       } catch (err) {
-        console.error(`[PDF Vision] Page ${i} error:`, err.message);
+        console.error(`[PDF Vision] Page ${i + 1} OCR error:`, err.message);
       } finally {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+        if (fs.existsSync(pageFiles[i])) fs.unlinkSync(pageFiles[i]);
       }
     }
 
@@ -424,7 +451,7 @@ async function extractTextFromPDF(pdfPath) {
     return result;
 
   } catch (error) {
-    console.error('[PDF Vision] Fatal:', error.message);
+    console.error('[PDF Vision] pdftoppm error:', error.message);
     return '';
   }
 }
