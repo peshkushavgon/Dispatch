@@ -315,18 +315,27 @@ async function calculateAndSendMileage(chatId, truckLocation, state) {
 
     await bot.sendMessage(chatId, '🗺️ Calculating mileage... Please wait ⏳');
 
-    const firstPickup  = state.pickups[0];
-    const lastDelivery = state.deliveries[state.deliveries.length - 1];
+    const firstPickup = state.pickups[0];
 
-    console.log(`[MILEAGE] Truck: "${truckLocation}" → PU: "${firstPickup}" → DEL: "${lastDelivery}"`);
+    // Build full route: all pickups in order + all deliveries in order
+    const allStops = [...state.pickups, ...state.deliveries];
+    const routeStr = allStops.join(' → ');
+    console.log(`[MILEAGE] Truck: "${truckLocation}" → Route: ${routeStr}`);
 
-    // Calculate deadhead + loaded in parallel
-    const [deadheadMiles, loadedMiles] = await Promise.all([
-      getDrivingMiles(truckLocation, firstPickup),
-      getDrivingMiles(firstPickup, lastDelivery)
-    ]);
+    // Deadhead: truck → first pickup (in parallel with loaded calc)
+    // Loaded: sum of each leg PU1→PU2→...→DEL1→DEL2→...
+    const deadheadPromise = getDrivingMiles(truckLocation, firstPickup);
 
-    console.log(`[MILEAGE] Deadhead: ${deadheadMiles} | Loaded: ${loadedMiles}`);
+    // Calculate each loaded leg sequentially then sum
+    let loadedMiles = 0;
+    for (let i = 0; i < allStops.length - 1; i++) {
+      const legMiles = await getDrivingMiles(allStops[i], allStops[i + 1]);
+      console.log(`[MILEAGE] Leg ${i + 1}: "${allStops[i]}" → "${allStops[i + 1]}" = ${legMiles} miles`);
+      if (legMiles !== null) loadedMiles += legMiles;
+    }
+
+    const deadheadMiles = await deadheadPromise;
+    console.log(`[MILEAGE] Deadhead: ${deadheadMiles} | Loaded: ${loadedMiles} (${allStops.length - 1} legs)`);
 
     // Build and send the ONE combined final message
     const finalMsg = buildFinalMessage(state.dispatchData, deadheadMiles, loadedMiles);
