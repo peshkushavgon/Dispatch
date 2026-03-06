@@ -18,14 +18,15 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "canvas": "^2.11.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
     "node-telegram-bot-api": "^0.66.0",
     "openai": "^4.63.0",
-    "express": "^4.21.1",
-    "dotenv": "^16.4.5",
     "pdf-parse": "^1.1.1",
-    "tesseract.js": "^5.1.1",
+    "pdf2pic": "^3.2.0",
     "pdfjs-dist": "^3.11.174",
-    "canvas": "^2.11.2"
+    "tesseract.js": "^5.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"

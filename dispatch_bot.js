@@ -6,15 +6,12 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pdfParse from 'pdf-parse';
-import pdfjsLib from 'pdfjs-dist';
+import pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js';
 import { createCanvas, DOMMatrix } from 'canvas';
 
-const { getDocument } = pdfjsLib;
-
-// Polyfill DOMMatrix globally for pdfjs-dist
-if (typeof globalThis.DOMMatrix === 'undefined') {
-  globalThis.DOMMatrix = DOMMatrix;
-}
+// Polyfill DOMMatrix for pdfjs
+if (typeof globalThis.DOMMatrix === 'undefined') globalThis.DOMMatrix = DOMMatrix;
+if (typeof globalThis.Path2D === 'undefined') globalThis.Path2D = class Path2D {};
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -416,44 +413,132 @@ async function extractTextFromPDF(pdfPath) {
 }
 
 async function renderPDFWithPdftoppm(pdfPath) {
-  const { execSync } = await import('child_process');
-  const prefix = path.join(__dirname, 'temp', `pdf_${Date.now()}`);
+  // Strategy 1: Try pdfjs page rendering
+  const pdfjsResult = await renderWithPdfjs(pdfPath);
+
+  // Only use pdfjs result if it got solid content from ALL pages
+  // 723 chars for a 2-page rate con is NOT enough — real rate cons have 2000+ chars
+  const lines = pdfjsResult.split('--- Page').filter(p => p.trim().length > 50);
+  const totalPages = lines.length;
+  const goodPages  = lines.filter(p => p.length > 800).length;
+  const isGood     = goodPages >= totalPages && pdfjsResult.length > 2000;
+  if (isGood) {
+    console.log(`[PDF Vision] pdfjs result OK (${pdfjsResult.length} chars, ${goodPages}/${totalPages} good pages)`);
+    return pdfjsResult;
+  }
+  console.log(`[PDF Vision] pdfjs weak (${pdfjsResult.length} chars, ${goodPages}/${totalPages} good pages) — using GPT direct...`);
+
+  // Strategy 2: Send raw PDF to GPT-4o using file upload approach
+  console.log('[PDF Vision] pdfjs result weak — trying GPT-4o file reading...');
+  return await readPDFWithGPT(pdfPath);
+}
+
+async function renderWithPdfjs(pdfPath) {
   const allText = [];
-
   try {
-    // Render all pages to PNG at 250dpi — good quality for OCR
-    execSync(`pdftoppm -r 250 -png "${pdfPath}" "${prefix}"`, { stdio: 'pipe' });
+    const data = new Uint8Array(fs.readFileSync(pdfPath));
+    const pdf  = await pdfjsLib.getDocument({
+      data,
+      useSystemFonts: true,
+      disableFontFace: false,
+      verbosity: 0
+    }).promise;
 
-    // Find all generated pages (sorted)
-    const tempDir = path.join(__dirname, 'temp');
-    const baseName = path.basename(prefix);
-    const pageFiles = fs.readdirSync(tempDir)
-      .filter(f => f.startsWith(baseName) && f.endsWith('.png'))
-      .sort()
-      .map(f => path.join(tempDir, f));
+    console.log(`[PDF Vision] pdfjs: ${pdf.numPages} pages`);
 
-    console.log(`[PDF Vision] ${pageFiles.length} pages rendered by pdftoppm`);
-
-    for (let i = 0; i < pageFiles.length; i++) {
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const tmpPath = path.join(__dirname, 'temp', `pg_${i}_${Date.now()}.png`);
       try {
-        const pageText = await ocrImage(pageFiles[i]);
-        console.log(`[PDF Vision] Page ${i + 1}: ${pageText.length} chars`);
-        if (pageText.length > 20) allText.push(`--- Page ${i + 1} ---\n${pageText}`);
+        const page     = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 3.0 });
+        const canvas   = createCanvas(viewport.width, viewport.height);
+        const ctx      = canvas.getContext('2d');
+        ctx.fillStyle  = 'white';
+        ctx.fillRect(0, 0, viewport.width, viewport.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        fs.writeFileSync(tmpPath, canvas.toBuffer('image/png'));
+        const pageText = await ocrImage(tmpPath);
+        console.log(`[PDF Vision] Page ${i}: ${pageText.length} chars`);
+        if (pageText.length > 20) allText.push(`--- Page ${i} ---\n${pageText}`);
       } catch (err) {
-        console.error(`[PDF Vision] Page ${i + 1} OCR error:`, err.message);
+        console.error(`[PDF Vision] Page ${i} render error:`, err.message);
       } finally {
-        if (fs.existsSync(pageFiles[i])) fs.unlinkSync(pageFiles[i]);
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
       }
     }
-
-    const result = allText.join('\n\n');
-    console.log(`[PDF Vision] Done. Total: ${result.length} chars`);
-    return result;
-
-  } catch (error) {
-    console.error('[PDF Vision] pdftoppm error:', error.message);
-    return '';
+  } catch (err) {
+    console.error('[PDF Vision] pdfjs fatal:', err.message);
   }
+  return allText.join('\n\n');
+}
+
+// Send PDF directly to GPT-4o — works for any PDF type including custom fonts
+async function readPDFWithGPT(pdfPath) {
+  try {
+    const pdfBuffer = fs.readFileSync(pdfPath);
+    const base64    = pdfBuffer.toString('base64');
+    console.log('[PDF GPT] Sending PDF to GPT-4o as document...');
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'You are an OCR engine. Extract ALL text from this PDF exactly as it appears. Return ONLY the raw text, nothing else.'
+          },
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: base64
+            }
+          }
+        ]
+      }],
+      max_tokens: 4000
+    });
+
+    const text = response.choices[0].message.content.trim();
+    console.log(`[PDF GPT] Done. ${text.length} chars`);
+    return text;
+  } catch (err) {
+    console.log('[PDF GPT] document type failed, trying image pages...');
+    // Render each page as image and send to GPT
+    return await ocrPDFAsImages(pdfPath);
+  }
+}
+
+async function ocrPDFAsImages(pdfPath) {
+  // Render PDF pages to PNG at high scale and OCR each one
+  const allText = [];
+  try {
+    const data = new Uint8Array(fs.readFileSync(pdfPath));
+    const pdf  = await pdfjsLib.getDocument({ data, useSystemFonts: true, verbosity: 0 }).promise;
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const tmpPath = path.join(__dirname, 'temp', `ocr_${i}_${Date.now()}.png`);
+      try {
+        const page     = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 4.0 }); // max scale for clarity
+        const canvas   = createCanvas(viewport.width, viewport.height);
+        const ctx      = canvas.getContext('2d');
+        ctx.fillStyle  = 'white';
+        ctx.fillRect(0, 0, viewport.width, viewport.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        fs.writeFileSync(tmpPath, canvas.toBuffer('image/png'));
+        const pageText = await ocrImage(tmpPath);
+        console.log(`[PDF GPT Images] Page ${i}: ${pageText.length} chars`);
+        if (pageText.length > 20) allText.push(pageText);
+      } finally {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      }
+    }
+  } catch (e) {
+    console.error('[PDF GPT Images] error:', e.message);
+  }
+  return allText.join('\n\n');
 }
 
 // ─────────────────────────────────────────────
