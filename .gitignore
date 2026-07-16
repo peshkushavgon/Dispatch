@@ -2,3 +2,6 @@
 node_modules
 .triumph-tokens.json
 .triumph-tokens.json.tmp
+temp/
+rais-state.json
+rais-state.json.tmp

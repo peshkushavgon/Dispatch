@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node dispatch_bot.js",
-    "dev": "nodemon dispatch_bot.js"
+    "dev": "nodemon dispatch_bot.js",
+    "setup-rais-gmail": "node scripts/setup-rais-gmail.js",
+    "postinstall": "npm rebuild canvas"
   },
   "keywords": [
     "telegram",
@@ -22,6 +24,7 @@
     "canvas": "^2.11.2",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "googleapis": "^128.0.0",
     "node-telegram-bot-api": "^0.66.0",
     "openai": "^4.63.0",
     "pdf-parse": "^1.1.1",

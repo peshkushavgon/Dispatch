@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Dispatch Control Dashboard</title>
+  <style>
+    :root {
+      --bg: #090c12;
+      --panel: #111722;
+      --panel-2: #151d2a;
+      --line: #253044;
+      --text: #f5f7fb;
+      --muted: #92a0b7;
+      --blue: #5b8cff;
+      --cyan: #40c9c6;
+      --green: #43d17d;
+      --amber: #f6bb4b;
+      --red: #f26b70;
+      --purple: #a98bff;
+      --radius: 18px;
+      --shadow: 0 22px 60px rgba(0, 0, 0, .28);
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--bg); }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% -10%, rgba(91, 140, 255, .18), transparent 32rem),
+        radial-gradient(circle at 92% 8%, rgba(64, 201, 198, .10), transparent 26rem),
+        var(--bg);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, input { font: inherit; }
+
+    .login {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(9, 12, 18, .96);
+    }
+
+    .login-card {
+      width: min(430px, 100%);
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: linear-gradient(145deg, rgba(21, 29, 42, .98), rgba(13, 18, 27, .98));
+      box-shadow: var(--shadow);
+    }
+
+    .brand-mark {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 15px;
+      color: white;
+      background: linear-gradient(135deg, var(--blue), var(--purple));
+      font-size: 20px;
+      font-weight: 800;
+      box-shadow: 0 12px 32px rgba(91, 140, 255, .32);
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    .login-card h1 { margin: 22px 0 8px; font-size: 27px; letter-spacing: -.03em; }
+    .login-card p { color: var(--muted); line-height: 1.55; }
+
+    .field-label {
+      display: block;
+      margin: 24px 0 8px;
+      color: #cbd4e4;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .password-row { display: flex; gap: 10px; }
+    .password-row input {
+      min-width: 0;
+      flex: 1;
+      padding: 13px 14px;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      outline: none;
+      background: #0c111a;
+    }
+    .password-row input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(91, 140, 255, .14); }
+
+    .button {
+      padding: 12px 16px;
+      border: 0;
+      border-radius: 12px;
+      color: white;
+      background: var(--blue);
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .button:hover { filter: brightness(1.08); }
+    .button.secondary { background: var(--panel-2); border: 1px solid var(--line); color: #dbe3f1; }
+    .login-error { min-height: 20px; margin-top: 12px; color: var(--red); font-size: 13px; }
+
+    .app { display: none; min-height: 100vh; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 14px clamp(18px, 4vw, 54px);
+      border-bottom: 1px solid rgba(37, 48, 68, .78);
+      background: rgba(9, 12, 18, .84);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand .brand-mark { width: 38px; height: 38px; border-radius: 12px; font-size: 16px; }
+    .brand-title { font-weight: 800; letter-spacing: -.02em; }
+    .brand-subtitle { margin-top: 2px; color: var(--muted); font-size: 11px; }
+
+    .top-actions { display: flex; align-items: center; gap: 10px; }
+    .online {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 11px;
+      border: 1px solid rgba(67, 209, 125, .2);
+      border-radius: 999px;
+      color: #a8f0c4;
+      background: rgba(67, 209, 125, .08);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .online::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(67, 209, 125, .13);
+    }
+
+    main { width: min(1440px, 100%); margin: 0 auto; padding: 38px clamp(18px, 4vw, 54px) 64px; }
+    .hero {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 26px;
+    }
+    .eyebrow {
+      margin-bottom: 9px;
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .hero h1 { margin-bottom: 8px; font-size: clamp(30px, 5vw, 48px); letter-spacing: -.045em; }
+    .hero p { margin: 0; color: var(--muted); font-size: 15px; }
+    .updated { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+    .service-grid, .stat-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .service-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 14px; }
+    .stat-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 26px; }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(21, 29, 42, .94), rgba(15, 21, 31, .94));
+      box-shadow: 0 15px 38px rgba(0, 0, 0, .14);
+    }
+
+    .service-card { padding: 18px; }
+    .service-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .service-name { display: flex; align-items: center; gap: 10px; font-weight: 780; }
+    .service-icon {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: #dfe7ff;
+      background: rgba(91, 140, 255, .13);
+      font-size: 13px;
+      font-weight: 850;
+    }
+    .service-card p { margin: 13px 0 0; min-height: 34px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+    .pill {
+      padding: 6px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .pill.healthy { color: #a8f0c4; background: rgba(67, 209, 125, .11); }
+    .pill.needs_setup { color: #ffda8a; background: rgba(246, 187, 75, .11); }
+    .pill.disabled { color: #b8c1d0; background: rgba(146, 160, 183, .11); }
+
+    .stat-card { min-height: 124px; padding: 19px; }
+    .stat-label { color: var(--muted); font-size: 12px; }
+    .stat-value { margin-top: 13px; font-size: 29px; font-weight: 820; letter-spacing: -.04em; }
+    .stat-note { margin-top: 7px; color: #6f7e96; font-size: 11px; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(340px, .75fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .stack { display: grid; gap: 18px; }
+
+    .section { overflow: hidden; }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .section-head h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+    .section-head span { color: var(--muted); font-size: 11px; }
+    .section-body { padding: 8px 20px 18px; }
+
+    .user-row, .activity-row, .config-row, .system-row {
+      display: grid;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 0;
+      border-bottom: 1px solid rgba(37, 48, 68, .66);
+    }
+    .user-row:last-child, .activity-row:last-child, .config-row:last-child, .system-row:last-child { border-bottom: 0; }
+    .user-row { grid-template-columns: 34px minmax(0, 1fr) auto; }
+    .rank {
+      width: 29px;
+      height: 29px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: #aebbd0;
+      background: rgba(146, 160, 183, .08);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .row-main { min-width: 0; }
+    .row-title { overflow: hidden; color: #e7ecf5; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .row-sub { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .row-value { color: #dce5f6; font-size: 12px; font-weight: 750; }
+
+    .activity-row { grid-template-columns: 9px minmax(0, 1fr) auto; }
+    .activity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .activity-dot.error { background: var(--red); }
+    .activity-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+    .config-group { padding-top: 10px; }
+    .config-group-title {
+      padding: 10px 0 5px;
+      color: #8fa3c3;
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .config-row { grid-template-columns: minmax(0, 1fr) auto; padding: 10px 0; }
+    .config-name { color: #dce4f1; font-size: 12px; }
+    .config-key { margin-top: 3px; color: #697892; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; }
+    .check { color: var(--green); font-size: 11px; font-weight: 800; }
+    .check.missing { color: var(--amber); }
+
+    .system-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .system-label { color: var(--muted); font-size: 12px; }
+    .system-value { color: #e1e8f4; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+
+    .empty { padding: 30px 10px; color: var(--muted); text-align: center; font-size: 12px; }
+    .footer { margin-top: 28px; color: #5f6d84; font-size: 11px; text-align: center; }
+
+    @media (max-width: 1100px) {
+      .service-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .layout { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      .topbar { align-items: flex-start; }
+      .brand-subtitle, .online { display: none; }
+      .top-actions .button { padding: 9px 11px; font-size: 12px; }
+      .hero { align-items: flex-start; flex-direction: column; }
+      .service-grid, .stat-grid { grid-template-columns: 1fr 1fr; }
+      .service-card p { min-height: 0; }
+      .stat-card { min-height: 108px; }
+      .stat-value { font-size: 25px; }
+    }
+    @media (max-width: 430px) {
+      .service-grid, .stat-grid { grid-template-columns: 1fr; }
+      .password-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <section class="login" id="login">
+    <form class="login-card" id="login-form">
+      <div class="brand-mark">DC</div>
+      <h1>Dispatch Control</h1>
+      <p>A private operational view of the dispatcher, Triumph MC checks, and Rais Gmail automation.</p>
+      <label class="field-label" for="password">Dashboard password</label>
+      <div class="password-row">
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button class="button" type="submit">Open dashboard</button>
+      </div>
+      <div class="login-error" id="login-error" role="alert"></div>
+    </form>
+  </section>
+
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">DC</div>
+        <div>
+          <div class="brand-title">Dispatch Control</div>
+          <div class="brand-subtitle">Operations dashboard</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="online" id="online-label">Online</span>
+        <button class="button secondary" id="refresh-button" type="button">Refresh</button>
+        <button class="button secondary" id="logout-button" type="button">Log out</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <div class="eyebrow">Live operations</div>
+          <h1>Whole-bot overview</h1>
+          <p>Dispatcher workflow, MC credit checks, Rais email activity, and service readiness.</p>
+        </div>
+        <div class="updated" id="updated">Waiting for data…</div>
+      </section>
+
+      <section class="service-grid" id="services"></section>
+      <section class="stat-grid" id="stats"></section>
+
+      <div class="layout">
+        <div class="stack">
+          <section class="card section">
+            <div class="section-head">
+              <h2>Dispatcher users</h2>
+              <span>Top usage</span>
+            </div>
+            <div class="section-body" id="users"></div>
+          </section>
+
+          <section class="card section">
+            <div class="section-head">
+              <h2>Rais activity</h2>
+              <span>Latest Gmail actions</span>
+            </div>
+            <div class="section-body" id="activity"></div>
+          </section>
+        </div>
+
+        <aside class="stack">
+          <section class="card section">
+            <div class="section-head">
+              <h2>System</h2>
+              <span>Current process</span>
+            </div>
+            <div class="section-body" id="system"></div>
+          </section>
+
+          <section class="card section">
+            <div class="section-head">
+              <h2>Render configuration</h2>
+              <span>Values are never displayed</span>
+            </div>
+            <div class="section-body" id="configuration"></div>
+          </section>
+        </aside>
+      </div>
+
+      <div class="footer">Private dashboard · Refreshes every 10 seconds</div>
+    </main>
+  </div>
+
+  <script>
+    var dashboardPassword = '';
+    var pollTimer = null;
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, function (character) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;'
+        }[character];
+      });
+    }
+
+    function formatNumber(value) {
+      return new Intl.NumberFormat('en-US').format(Number(value) || 0);
+    }
+
+    function formatDuration(totalSeconds) {
+      var seconds = Math.max(0, Number(totalSeconds) || 0);
+      var days = Math.floor(seconds / 86400);
+      var hours = Math.floor((seconds % 86400) / 3600);
+      var minutes = Math.floor((seconds % 3600) / 60);
+      return (days ? days + 'd ' : '') + (hours ? hours + 'h ' : '') + minutes + 'm';
+    }
+
+    function formatDate(value) {
+      if (!value) return 'No activity yet';
+      var date = new Date(value);
+      if (Number.isNaN(date.getTime())) return 'Unknown time';
+      return date.toLocaleString();
+    }
+
+    async function request(path) {
+      var response = await fetch(path, {
+        headers: { 'x-dashboard-token': dashboardPassword },
+        cache: 'no-store'
+      });
+      if (!response.ok) {
+        var payload = {};
+        try { payload = await response.json(); } catch (error) {}
+        var requestError = new Error(payload.error || 'Dashboard request failed.');
+        requestError.status = response.status;
+        throw requestError;
+      }
+      return response.json();
+    }
+
+    function renderServices(services) {
+      document.getElementById('services').innerHTML = services.map(function (service) {
+        var label = service.status === 'healthy'
+          ? 'Ready'
+          : service.status === 'disabled'
+            ? 'Disabled'
+            : 'Needs setup';
+        var initials = service.name.split(' ').map(function (word) { return word[0]; }).join('').slice(0, 2);
+        return '<article class="card service-card">'
+          + '<div class="service-head">'
+          + '<div class="service-name"><span class="service-icon">' + escapeHtml(initials) + '</span>' + escapeHtml(service.name) + '</div>'
+          + '<span class="pill ' + escapeHtml(service.status) + '">' + label + '</span>'
+          + '</div>'
+          + '<p>' + escapeHtml(service.description) + '</p>'
+          + '</article>';
+      }).join('');
+    }
+
+    function renderStats(data) {
+      var cards = [
+        ['Loads today', data.dispatcher.processedToday, 'Rate confirmations processed'],
+        ['Loads total', data.dispatcher.processedTotal, 'All recorded dispatcher usage'],
+        ['Pending locations', data.dispatcher.pendingLocations, 'Waiting for truck location'],
+        ['Dispatcher users', data.dispatcher.userCount, 'Unique recorded chats'],
+        ['Rais emails today', data.rais.sentToday, data.rais.filesToday + ' attachment files'],
+        ['Rais errors today', data.rais.errorsToday, data.rais.enabled ? 'Automation enabled' : 'Automation disabled']
+      ];
+      document.getElementById('stats').innerHTML = cards.map(function (card) {
+        return '<article class="card stat-card">'
+          + '<div class="stat-label">' + escapeHtml(card[0]) + '</div>'
+          + '<div class="stat-value">' + formatNumber(card[1]) + '</div>'
+          + '<div class="stat-note">' + escapeHtml(card[2]) + '</div>'
+          + '</article>';
+      }).join('');
+    }
+
+    function renderUsers(users) {
+      var container = document.getElementById('users');
+      if (!users.length) {
+        container.innerHTML = '<div class="empty">No dispatcher usage recorded yet.</div>';
+        return;
+      }
+      container.innerHTML = users.map(function (user, index) {
+        return '<div class="user-row">'
+          + '<span class="rank">' + (index + 1) + '</span>'
+          + '<div class="row-main"><div class="row-title">' + escapeHtml(user.name) + '</div>'
+          + '<div class="row-sub">Last used: ' + escapeHtml(formatDate(user.lastUsed)) + '</div></div>'
+          + '<div class="row-value">' + formatNumber(user.count) + ' files</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    function renderActivity(entries) {
+      var container = document.getElementById('activity');
+      if (!entries.length) {
+        container.innerHTML = '<div class="empty">No Rais email activity recorded yet.</div>';
+        return;
+      }
+      container.innerHTML = entries.map(function (entry) {
+        var sent = entry.outcome === 'sent';
+        var detail = sent
+          ? (entry.eventType || 'update') + ' email sent'
+          : 'Failed: ' + (entry.error || 'Unknown error');
+        return '<div class="activity-row">'
+          + '<span class="activity-dot ' + (sent ? '' : 'error') + '"></span>'
+          + '<div class="row-main"><div class="row-title">Load #' + escapeHtml(entry.loadNumber) + ' · ' + escapeHtml(detail) + '</div>'
+          + '<div class="row-sub">' + escapeHtml(entry.groupName || 'Direct') + ' · @' + escapeHtml(entry.taggerName || 'dispatcher') + ' · ' + formatNumber(entry.fileCount) + ' files</div></div>'
+          + '<div class="activity-time">' + escapeHtml(formatDate(entry.timestamp)) + '</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    function renderSystem(system) {
+      var rows = [
+        ['Status', system.online ? 'Online' : 'Offline'],
+        ['Uptime', formatDuration(system.uptimeSeconds)],
+        ['Memory', formatNumber(system.memoryMb) + ' MB'],
+        ['Node', system.nodeVersion],
+        ['Environment', system.environment],
+        ['Started', formatDate(system.startedAt)]
+      ];
+      document.getElementById('system').innerHTML = rows.map(function (row) {
+        return '<div class="system-row"><span class="system-label">' + escapeHtml(row[0]) + '</span>'
+          + '<span class="system-value">' + escapeHtml(row[1]) + '</span></div>';
+      }).join('');
+    }
+
+    function renderConfiguration(items) {
+      var groups = {};
+      items.forEach(function (item) {
+        if (!groups[item.section]) groups[item.section] = [];
+        groups[item.section].push(item);
+      });
+      document.getElementById('configuration').innerHTML = Object.keys(groups).map(function (section) {
+        return '<div class="config-group"><div class="config-group-title">' + escapeHtml(section) + '</div>'
+          + groups[section].map(function (item) {
+            return '<div class="config-row"><div><div class="config-name">' + escapeHtml(item.label) + '</div>'
+              + '<div class="config-key">' + escapeHtml(item.key) + (item.required ? ' · required' : ' · optional') + '</div></div>'
+              + '<span class="check ' + (item.configured ? '' : 'missing') + '">' + (item.configured ? 'Configured' : 'Missing') + '</span></div>';
+          }).join('')
+          + '</div>';
+      }).join('');
+    }
+
+    async function loadDashboard() {
+      try {
+        var results = await Promise.all([
+          request('/api/dashboard/overview'),
+          request('/api/dashboard/activity?limit=40')
+        ]);
+        var overview = results[0];
+        renderServices(overview.services || []);
+        renderStats(overview);
+        renderUsers(overview.dispatcher.topUsers || []);
+        renderActivity(results[1].activity || []);
+        renderSystem(overview.system);
+        renderConfiguration(overview.configuration || []);
+        document.getElementById('updated').textContent = 'Updated ' + new Date(overview.generatedAt).toLocaleTimeString();
+        document.getElementById('online-label').textContent = 'Online';
+      } catch (error) {
+        document.getElementById('online-label').textContent = 'Connection issue';
+        if (error.status === 401 || error.status === 429) logout();
+      }
+    }
+
+    function showApp() {
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(loadDashboard, 10000);
+    }
+
+    function logout() {
+      dashboardPassword = '';
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+      document.getElementById('app').style.display = 'none';
+      document.getElementById('login').style.display = 'grid';
+      document.getElementById('password').value = '';
+    }
+
+    document.getElementById('login-form').addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var errorBox = document.getElementById('login-error');
+      dashboardPassword = document.getElementById('password').value.trim();
+      errorBox.textContent = '';
+      try {
+        await request('/api/dashboard/overview');
+        showApp();
+        await loadDashboard();
+      } catch (error) {
+        if (error.status === 503) {
+          errorBox.textContent = 'Add BOT_DASHBOARD_PASSWORD in Render first.';
+        } else if (error.status === 429) {
+          errorBox.textContent = 'Too many attempts. Please wait 15 minutes.';
+        } else {
+          errorBox.textContent = 'Incorrect dashboard password.';
+        }
+        dashboardPassword = '';
+      }
+    });
+
+    document.getElementById('refresh-button').addEventListener('click', loadDashboard);
+    document.getElementById('logout-button').addEventListener('click', logout);
+  </script>
+</body>
+</html>

@@ -9,6 +9,8 @@ import pdfParse from 'pdf-parse';
 import pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js';
 import { createCanvas, DOMMatrix } from 'canvas';
 import { handleMC } from './services/mcChecker.js';
+import { isRaisMessage, registerRaisBot } from './services/raisBot.js';
+import { registerBotDashboard } from './services/botDashboard.js';
 
 // Polyfill DOMMatrix for pdfjs
 if (typeof globalThis.DOMMatrix === 'undefined') globalThis.DOMMatrix = DOMMatrix;
@@ -36,6 +38,7 @@ if (!MAPBOX_TOKEN)       throw new Error('Missing MAPBOX_TOKEN in .env');
 // ─────────────────────────────────────────────
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const bot    = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+registerRaisBot(bot);
 
 // ─────────────────────────────────────────────
 // EXPRESS — health check endpoints
@@ -43,6 +46,7 @@ const bot    = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 const app = express();
 app.get('/',       (req, res) => res.status(200).send('🤖 Dispatch Bot is running!'));
 app.get('/health', (req, res) => res.status(200).send('OK'));
+registerBotDashboard(app);
 
 // Graceful shutdown
 process.on('SIGINT',  () => process.exit(0));
@@ -930,7 +934,7 @@ bot.onText(/^\/mc(?:@\w+)?(?:\s+(.+))?$/i, async (msg, match) => {
 // ─────────────────────────────────────────────
 // /status
 // ─────────────────────────────────────────────
-bot.onText(/\/status/, async (msg) => {
+bot.onText(/^\/status(?:@\w+)?$/, async (msg) => {
   const chatId = msg.chat.id;
 
   const sec  = Math.floor(process.uptime());
@@ -971,6 +975,8 @@ ${topUsers}`,
 // MESSAGE HANDLER — truck location replies
 // ─────────────────────────────────────────────
 bot.on('message', async (msg) => {
+  if (isRaisMessage(msg)) return;
+
   const chatId = msg.chat.id;
 
   // Only handle plain text
@@ -1015,6 +1021,8 @@ bot.on('message', async (msg) => {
 // TELEGRAM: PDF HANDLER
 // ─────────────────────────────────────────────
 bot.on('document', async (msg) => {
+  if (isRaisMessage(msg)) return;
+
   const chatId    = msg.chat.id;
   const firstName = msg.from.first_name;
   const doc       = msg.document;
@@ -1038,6 +1046,8 @@ bot.on('document', async (msg) => {
 // TELEGRAM: PHOTO HANDLER
 // ─────────────────────────────────────────────
 bot.on('photo', async (msg) => {
+  if (isRaisMessage(msg)) return;
+
   const chatId    = msg.chat.id;
   const firstName = msg.from.first_name;
   const photo     = msg.photo[msg.photo.length - 1];

@@ -12,11 +12,31 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: MAPBOX_TOKEN
+        sync: false
       - key: TRIUMPH_TOKEN
         sync: false
       - key: TRIUMPH_REFRESH_TOKEN
         sync: false
       - key: TRIUMPH_CLIENT_ID
         value: "126906"
+      - key: RAIS_ENABLED
+        value: "false"
+      - key: RAIS_ALLOWED_CHAT_IDS
+        sync: false
+      - key: RAIS_ALLOWED_USERNAMES
+        sync: false
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REDIRECT_URI
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false
+      - key: DEFAULT_EMAIL_TO
+        sync: false
+      - key: BOT_DASHBOARD_PASSWORD
+        sync: false
       - key: NODE_ENV
         value: production
