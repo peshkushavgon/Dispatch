@@ -4,6 +4,7 @@ import {
   searchMC,
   TriumphApiError,
 } from './triumphApi.js';
+import { lookupBrokerContact } from './brokerContact.js';
 
 const MAX_LOAD_AMOUNT = 25_000_000;
 const FURTHER_INFORMATION_REASON = 'FurtherInformationIsNeeded';
@@ -91,6 +92,15 @@ function displayMC(result, fallback) {
   return digits || docket || String(fallback);
 }
 
+function addContactLines(lines, result) {
+  const contact = result.brokerContact ?? {};
+  lines.push(`Phone: ${contact.phone ?? 'Not found'}`);
+  lines.push(`Email: ${contact.email ?? 'Not found'}`);
+  lines.push(`Website: ${contact.website ?? 'Not found'}`);
+  lines.push(`Domain: ${contact.domain ?? 'Not found'}`);
+  if (contact.sourceUrl) lines.push(`Contact source: ${contact.sourceUrl}`);
+}
+
 export function parseMCArguments(rawArguments) {
   const parts = String(rawArguments ?? '').trim().split(/\s+/).filter(Boolean);
 
@@ -143,6 +153,7 @@ export function formatCreditCheck(result, mcNumber, loadAmount = null) {
 
   if (dba) lines.push(`DBA: ${dba}`);
   if (address) lines.push(`Address: ${address}`);
+  addContactLines(lines, result);
   if (authority) lines.push(`Authority: ${authority}`);
   lines.push(`Status: ${decision.label}`);
   if (authority === 'INACTIVE') lines.push('Reason: Inactive FMCSA authority');
@@ -167,6 +178,7 @@ function formatAmountRequired(result, mcNumber) {
 
   if (dba) lines.push(`DBA: ${dba}`);
   if (address) lines.push(`Address: ${address}`);
+  addContactLines(lines, result);
   lines.push('', `Run: /mc ${mcNumber} <amount>`, `Example: /mc ${mcNumber} 2500`);
   return lines.join('\n');
 }
@@ -223,6 +235,7 @@ export async function handleMC(bot, chatId, rawArguments) {
 
     const creditResult = await getCreditCheck(riskEntityId, loadAmount);
     const result = { ...match, ...creditResult };
+    result.brokerContact = await lookupBrokerContact(result, mcNumber);
 
     if (creditResult?.reason === FURTHER_INFORMATION_REASON && loadAmount === null) {
       await bot.sendMessage(chatId, formatAmountRequired(result, mcNumber));

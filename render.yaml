@@ -20,6 +20,12 @@ services:
         sync: false
       - key: TRIUMPH_CLIENT_ID
         value: "126906"
+      - key: FMCSA_WEB_KEY
+        sync: false
+      - key: BROKER_CONTACT_WEB_SEARCH
+        value: "true"
+      - key: BROKER_CONTACT_MODEL
+        value: "gpt-5.4-mini"
       - key: RAIS_ENABLED
         value: "false"
       - key: RAIS_ALLOWED_CHAT_IDS

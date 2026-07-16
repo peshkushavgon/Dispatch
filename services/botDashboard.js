@@ -116,6 +116,8 @@ function getConfiguration() {
     { section: 'Triumph', key: 'TRIUMPH_CLIENT_ID', label: 'Triumph client ID', required: true },
     { section: 'Triumph', key: 'TRIUMPH_REFRESH_TOKEN', label: 'Triumph refresh token', required: true },
     { section: 'Triumph', key: 'TRIUMPH_TOKEN', label: 'Triumph access token', required: false },
+    { section: 'Triumph', key: 'FMCSA_WEB_KEY', label: 'FMCSA phone lookup key', required: false },
+    { section: 'Triumph', key: 'BROKER_CONTACT_WEB_SEARCH', label: 'Broker email/domain search', required: false, configured: isEnabled('BROKER_CONTACT_WEB_SEARCH') },
     { section: 'Rais', key: 'RAIS_ENABLED', label: 'Rais enabled', required: true, configured: isEnabled('RAIS_ENABLED') },
     { section: 'Rais', key: 'RAIS_ALLOWED_CHAT_IDS', label: 'Allowed Rais chats', required: true },
     { section: 'Rais', key: 'RAIS_ALLOWED_USERNAMES', label: 'Allowed Rais users', required: false },
