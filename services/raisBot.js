@@ -657,7 +657,7 @@ export function registerRaisBot(bot) {
     })
     .catch((error) => console.error(`[RAIS] Could not resolve bot username: ${error.message}`));
 
-  bot.prependListener('message', (msg) => {
+  bot.on('message', (msg) => {
     handleRaisMessage(bot, msg).catch((error) => {
       console.error(`[RAIS] Unexpected handler error: ${error.message}`);
     });
