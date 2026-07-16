@@ -206,7 +206,6 @@ export function registerBotDashboard(app) {
   const publicDirectory = path.resolve(__dirname, '..', 'public', 'dashboard');
 
   app.use('/dashboard', setSecurityHeaders);
-  app.get('/dashboard', (req, res) => res.redirect('/dashboard/'));
   app.use('/dashboard', express.static(publicDirectory, { index: 'index.html' }));
   app.get('/rais-dashboard', (req, res) => res.redirect('/dashboard/'));
   app.get('/rais-dashboard/', (req, res) => res.redirect('/dashboard/'));
