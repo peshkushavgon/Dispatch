@@ -12,5 +12,11 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: TRIUMPH_TOKEN
+        sync: false
+      - key: TRIUMPH_REFRESH_TOKEN
+        sync: false
+      - key: TRIUMPH_CLIENT_ID
+        value: "126906"
       - key: NODE_ENV
         value: production

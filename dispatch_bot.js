@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import pdfParse from 'pdf-parse';
 import pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js';
 import { createCanvas, DOMMatrix } from 'canvas';
+import { handleMC } from './services/mcChecker.js';
 
 // Polyfill DOMMatrix for pdfjs
 if (typeof globalThis.DOMMatrix === 'undefined') globalThis.DOMMatrix = DOMMatrix;
@@ -908,6 +909,23 @@ bot.onText(/\/cancel/, async (msg) => {
     await bot.sendMessage(chatId, '✅ Nothing pending. Send a rate confirmation to get started!');
   }
 });
+
+// ─────────────────────────────────────────────
+// /mc <number> [load amount] — Triumph credit check
+// ─────────────────────────────────────────────
+
+bot.onText(/^\/mc(?:@\w+)?(?:\s+(.+))?$/i, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const rawArguments = match[1] || '';
+
+  try {
+    await handleMC(bot, chatId, rawArguments);
+  } catch (err) {
+    console.error('[MC] Handler error:', err.message);
+    await bot.sendMessage(chatId, '❌ Failed to check MC.');
+  }
+});
+
 
 // ─────────────────────────────────────────────
 // /status

@@ -1,2 +1,4 @@
 .env
 node_modules
+.triumph-tokens.json
+.triumph-tokens.json.tmp

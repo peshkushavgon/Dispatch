@@ -18,6 +18,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.18.1",
     "canvas": "^2.11.2",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
@@ -26,9 +27,13 @@
     "pdf-parse": "^1.1.1",
     "pdf2pic": "^3.2.0",
     "pdfjs-dist": "^3.11.174",
+    "playwright": "^1.61.1",
     "tesseract.js": "^5.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
