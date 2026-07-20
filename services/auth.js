@@ -7,12 +7,16 @@ const DEFAULT_OAUTH_CLIENT_ID = '0oa4kpxnmr1jvq2ZT697';
 const REFRESH_TIMEOUT_MS = 20_000;
 const TOKEN_STORE_TIMEOUT_MS = 10_000;
 const TOKEN_STORE_RETRIES = 3;
+const REFRESH_LOCK_TTL_MS = 90_000;
+const REFRESH_LOCK_WAIT_MS = 25_000;
+const REFRESH_LOCK_POLL_MS = 400;
 const EXPIRY_SAFETY_SECONDS = 120;
 
 let authStateLoaded = false;
 let authStatePromise = null;
 let accessToken = null;
 let refreshToken = null;
+let configuredRefreshToken = null;
 let refreshPromise = null;
 let tokensNeedPersistence = false;
 
@@ -26,7 +30,16 @@ export class TriumphAuthError extends Error {
 }
 
 function cleanToken(value) {
-  return String(value ?? '').replace(/^Bearer\s+/i, '').trim() || null;
+  return String(value ?? '')
+    .replace(/^Bearer\s+/i, '')
+    .replace(/\s+/g, '') || null;
+}
+
+function tokenFingerprint(value) {
+  const token = cleanToken(value);
+  return token
+    ? crypto.createHash('sha256').update(token).digest('base64url')
+    : null;
 }
 
 function getIssuer() {
@@ -117,6 +130,9 @@ function readStoredTokensFromFile() {
     return {
       accessToken: cleanToken(stored.accessToken),
       refreshToken: cleanToken(stored.refreshToken),
+      environmentRefreshTokenHash: String(
+        stored.environmentRefreshTokenHash || '',
+      ).trim() || null,
     };
   } catch (error) {
     console.error(`[TRIUMPH AUTH] Could not read token store: ${error.message}`);
@@ -197,6 +213,54 @@ async function runRemoteStoreCommand(config, command) {
   }
 }
 
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function acquireRefreshLock() {
+  const config = getRemoteStoreConfig();
+  if (!config) return null;
+
+  const key = `${config.key}:refresh-lock`;
+  const owner = crypto.randomUUID();
+  const deadline = Date.now() + REFRESH_LOCK_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const result = await runRemoteStoreCommand(config, [
+      'SET',
+      key,
+      owner,
+      'NX',
+      'PX',
+      String(REFRESH_LOCK_TTL_MS),
+    ]);
+
+    if (result === 'OK') return { config, key, owner };
+    await wait(REFRESH_LOCK_POLL_MS);
+  }
+
+  throw new TriumphAuthError(
+    'Timed out waiting to safely renew the Triumph session.',
+    'TOKEN_STORE',
+  );
+}
+
+async function releaseRefreshLock(lock) {
+  if (!lock) return;
+
+  try {
+    await runRemoteStoreCommand(lock.config, [
+      'EVAL',
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+      '1',
+      lock.key,
+      lock.owner,
+    ]);
+  } catch (error) {
+    console.error(`[TRIUMPH AUTH] Could not release refresh lock: ${error.message}`);
+  }
+}
+
 async function readStoredTokensFromRemote() {
   const config = getRemoteStoreConfig();
   if (!config) return null;
@@ -216,6 +280,9 @@ async function readStoredTokensFromRemote() {
     return {
       accessToken: cleanToken(stored.accessToken),
       refreshToken: cleanToken(stored.refreshToken),
+      environmentRefreshTokenHash: String(
+        stored.environmentRefreshTokenHash || '',
+      ).trim() || null,
     };
   } catch {
     throw new TriumphAuthError(
@@ -225,22 +292,44 @@ async function readStoredTokensFromRemote() {
   }
 }
 
+function configuredTokenReplacesStoredToken(stored) {
+  const configuredHash = tokenFingerprint(configuredRefreshToken);
+  return Boolean(
+    configuredHash
+      && stored?.environmentRefreshTokenHash
+      && stored.environmentRefreshTokenHash !== configuredHash,
+  );
+}
+
+function applyStoredAuthState(stored) {
+  if (stored?.refreshToken) refreshToken = stored.refreshToken;
+  if (stored?.accessToken) accessToken = stored.accessToken;
+}
+
 async function loadAuthState() {
   if (authStateLoaded) return;
 
-  accessToken = cleanToken(process.env.TRIUMPH_TOKEN);
-  refreshToken = cleanToken(process.env.TRIUMPH_REFRESH_TOKEN);
+  const configuredAccessToken = cleanToken(process.env.TRIUMPH_TOKEN);
+  configuredRefreshToken = cleanToken(process.env.TRIUMPH_REFRESH_TOKEN);
+  accessToken = configuredAccessToken;
+  refreshToken = configuredRefreshToken;
 
   const fileStored = readStoredTokensFromFile();
-  if (fileStored?.refreshToken) refreshToken = fileStored.refreshToken;
-  if (fileStored?.accessToken && isAccessTokenFresh(fileStored.accessToken)) {
-    accessToken = fileStored.accessToken;
-  }
+  const fileWasReplaced = configuredTokenReplacesStoredToken(fileStored);
+  if (!fileWasReplaced) applyStoredAuthState(fileStored);
 
   const remoteStored = await readStoredTokensFromRemote();
-  if (remoteStored?.refreshToken) refreshToken = remoteStored.refreshToken;
-  if (remoteStored?.accessToken && isAccessTokenFresh(remoteStored.accessToken)) {
-    accessToken = remoteStored.accessToken;
+  if (remoteStored) {
+    if (configuredTokenReplacesStoredToken(remoteStored)) {
+      accessToken = configuredAccessToken;
+      refreshToken = configuredRefreshToken;
+      console.log('[TRIUMPH AUTH] Using a newly configured refresh session.');
+    } else {
+      applyStoredAuthState(remoteStored);
+    }
+  } else if (fileWasReplaced) {
+    accessToken = configuredAccessToken;
+    refreshToken = configuredRefreshToken;
   }
 
   authStateLoaded = true;
@@ -262,6 +351,7 @@ function storedTokenPayload() {
     oauthClientId: getOAuthClientId(),
     accessToken,
     refreshToken,
+    environmentRefreshTokenHash: tokenFingerprint(configuredRefreshToken),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -322,23 +412,7 @@ async function parseErrorResponse(response) {
   }
 }
 
-async function requestNewTokens() {
-  await ensureAuthState();
-
-  if (!refreshToken) {
-    if (accessToken) {
-      throw new TriumphAuthError(
-        'The access token expired and TRIUMPH_REFRESH_TOKEN is not configured.',
-        'REFRESH_TOKEN_MISSING',
-      );
-    }
-
-    throw new TriumphAuthError(
-      'Neither TRIUMPH_TOKEN nor TRIUMPH_REFRESH_TOKEN is configured.',
-      'AUTH_CONFIG',
-    );
-  }
-
+async function exchangeRefreshToken(candidate) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
 
@@ -346,7 +420,7 @@ async function requestNewTokens() {
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: getOAuthClientId(),
-      refresh_token: refreshToken,
+      refresh_token: candidate,
     });
 
     const response = await fetch(`${getIssuer()}/v1/token`, {
@@ -386,18 +460,10 @@ async function requestNewTokens() {
       );
     }
 
-    accessToken = nextAccessToken;
-    refreshToken = cleanToken(payload.refresh_token) || refreshToken;
-    tokensNeedPersistence = true;
-
-    try {
-      await persistTokens();
-    } catch (error) {
-      console.error(`[TRIUMPH AUTH] Could not persist rotated tokens: ${error.message}`);
-      throw error;
-    }
-
-    return accessToken;
+    return {
+      accessToken: nextAccessToken,
+      refreshToken: cleanToken(payload.refresh_token) || candidate,
+    };
   } catch (error) {
     if (error instanceof TriumphAuthError) throw error;
 
@@ -407,6 +473,75 @@ async function requestNewTokens() {
     );
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function requestNewTokens() {
+  await ensureAuthState();
+
+  if (!refreshToken) {
+    if (accessToken) {
+      throw new TriumphAuthError(
+        'The access token expired and TRIUMPH_REFRESH_TOKEN is not configured.',
+        'REFRESH_TOKEN_MISSING',
+      );
+    }
+
+    throw new TriumphAuthError(
+      'Neither TRIUMPH_TOKEN nor TRIUMPH_REFRESH_TOKEN is configured.',
+      'AUTH_CONFIG',
+    );
+  }
+
+  const lock = await acquireRefreshLock();
+
+  try {
+    if (lock) {
+      const latestStored = await readStoredTokensFromRemote();
+      if (latestStored && !configuredTokenReplacesStoredToken(latestStored)) {
+        applyStoredAuthState(latestStored);
+        if (isAccessTokenFresh(accessToken)) return accessToken;
+      }
+    }
+
+    const candidates = [...new Set([
+      cleanToken(refreshToken),
+      cleanToken(configuredRefreshToken),
+    ].filter(Boolean))];
+    let lastReauthError = null;
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      try {
+        const renewed = await exchangeRefreshToken(candidates[index]);
+        accessToken = renewed.accessToken;
+        refreshToken = renewed.refreshToken;
+        tokensNeedPersistence = true;
+
+        try {
+          await persistTokens();
+        } catch (error) {
+          console.error(`[TRIUMPH AUTH] Could not persist rotated tokens: ${error.message}`);
+          throw error;
+        }
+
+        return accessToken;
+      } catch (error) {
+        if (
+          error instanceof TriumphAuthError
+          && error.code === 'REAUTH_REQUIRED'
+          && index < candidates.length - 1
+        ) {
+          lastReauthError = error;
+          console.warn('[TRIUMPH AUTH] Stored session was rejected; trying the newly configured session.');
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw lastReauthError;
+  } finally {
+    await releaseRefreshLock(lock);
   }
 }
 
