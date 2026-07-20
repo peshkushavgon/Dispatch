@@ -132,6 +132,15 @@ export function parseMCArguments(rawArguments) {
   return { mcNumber, loadAmount };
 }
 
+export function parseDirectMCText(text) {
+  const normalized = String(text ?? '').trim();
+
+  if (/^\d{5,9}$/.test(normalized)) return normalized;
+
+  const prefixed = normalized.match(/^MC[-#:\s]*(\d{1,9})$/i);
+  return prefixed?.[1] ?? null;
+}
+
 export function formatCreditCheck(result, mcNumber, loadAmount = null) {
   const decision = getDecision(result);
   const authority = getAuthority(result);

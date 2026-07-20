@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import pdfParse from 'pdf-parse';
 import pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js';
 import { createCanvas, DOMMatrix } from 'canvas';
-import { handleMC } from './services/mcChecker.js';
+import { handleMC, parseDirectMCText } from './services/mcChecker.js';
 import { isRaisMessage, registerRaisBot } from './services/raisBot.js';
 import { registerBotDashboard } from './services/botDashboard.js';
 
@@ -897,7 +897,11 @@ bot.onText(/\/help/, async (msg) => {
 /start — Welcome
 /help — This page
 /status — Bot health and usage stats
-/cancel — Cancel pending location request`,
+/cancel — Cancel pending location request
+
+*MC checker:*
+Send an MC number directly, for example: 1482041
+You can also use /mc 1482041`,
   { parse_mode: 'Markdown' });
 });
 
@@ -1008,6 +1012,17 @@ bot.on('message', async (msg) => {
 
   if (state && state.state === 'waiting_for_location') {
     await calculateAndSendMileage(chatId, text, state);
+    return;
+  }
+
+  const directMCNumber = parseDirectMCText(text);
+  if (directMCNumber) {
+    try {
+      await handleMC(bot, chatId, directMCNumber);
+    } catch (err) {
+      console.error('[MC] Direct handler error:', err.message);
+      await bot.sendMessage(chatId, '❌ Failed to check MC.');
+    }
     return;
   }
 
