@@ -53,7 +53,7 @@ function getRemoteStoreConfig() {
     process.env.UPSTASH_REDIS_REST_TOKEN
       || process.env.TRIUMPH_TOKEN_STORE_REST_TOKEN
       || '',
-  ).trim();
+  ).replace(/\s+/g, '');
   const encryptionSecret = String(
     process.env.TRIUMPH_TOKEN_ENCRYPTION_KEY || '',
   ).trim();
