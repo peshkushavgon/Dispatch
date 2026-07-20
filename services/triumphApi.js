@@ -53,8 +53,15 @@ function normalizeApiError(error) {
   if (error instanceof TriumphApiError) return error;
 
   if (error instanceof TriumphAuthError) {
-    if (error.code === 'AUTH_CONFIG' || error.code === 'REFRESH_TOKEN_MISSING') {
+    if (
+      error.code === 'AUTH_CONFIG'
+      || error.code === 'REFRESH_TOKEN_MISSING'
+      || error.code === 'TOKEN_STORE_CONFIG'
+    ) {
       return new TriumphApiError(error.message, 'AUTH_SETUP', error.status);
+    }
+    if (error.code === 'TOKEN_STORE') {
+      return new TriumphApiError(error.message, 'AUTH_STORAGE', error.status);
     }
     if (error.code === 'AUTH_NETWORK') {
       return new TriumphApiError(error.message, 'NETWORK', error.status);

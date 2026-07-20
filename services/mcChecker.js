@@ -189,7 +189,10 @@ export function formatMCError(error) {
       return '🔐 Triumph refresh session expired. Sign in once and replace TRIUMPH_REFRESH_TOKEN.';
     }
     if (error.code === 'AUTH_SETUP') {
-      return '⚙️ Triumph automatic renewal needs TRIUMPH_REFRESH_TOKEN in the bot environment.';
+      return '⚙️ Triumph automatic renewal is not fully configured. Check the Triumph token-storage environment settings.';
+    }
+    if (error.code === 'AUTH_STORAGE') {
+      return '🔐 Triumph could not safely store the renewed session. Please try again shortly.';
     }
     if (error.code === 'CONFIG') {
       return '⚙️ Triumph is not configured. Check the Triumph environment settings.';

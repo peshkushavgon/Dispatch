@@ -20,6 +20,12 @@ services:
         sync: false
       - key: TRIUMPH_CLIENT_ID
         value: "126906"
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: TRIUMPH_TOKEN_ENCRYPTION_KEY
+        sync: false
       - key: FMCSA_WEB_KEY
         sync: false
       - key: BROKER_CONTACT_WEB_SEARCH
